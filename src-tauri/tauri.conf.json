@@ -1,0 +1,15 @@
+{
+  "productName": "ios-windows",
+  "version": "0.1.0",
+  "identifier": "dev.ios-windows.app",
+  "build": { "frontendDist": "../src" },
+  "app": {
+    "windows": [{ "title": "ios-windows", "width": 1100, "height": 800 }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}

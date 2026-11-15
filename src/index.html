@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>ios-windows</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee;display:flex;height:100vh}
+#side{width:320px;padding:16px;background:#1b1b1f;overflow:auto}
+#main{flex:1;display:flex;align-items:center;justify-content:center}
+label{display:block;font-size:12px;color:#aaa;margin:10px 0 4px}
+input,select,button{width:100%;padding:8px;border-radius:8px;border:1px solid #333;background:#26262c;color:#eee}
+button{background:#2a7fff;border:0;cursor:pointer;margin-top:8px}button.g{background:#333}
+canvas{max-height:96vh;max-width:100%;background:#000;border-radius:24px;cursor:pointer}
+#st{margin-top:12px;font-size:13px;color:#8cf;white-space:pre-wrap}
+</style></head><body>
+<div id="side">
+<h2 style="margin:0 0 8px">ios-windows</h2>
+<label>GitHub Token (repo+workflow権限)</label><input id="tok" type="password">
+<label>リポジトリ (owner/repo)</label><input id="repo" placeholder="you/ios-windows-runner">
+<label>ブランチ</label><input id="br" value="main">
+<label>IPA / .app.zip</label><input id="file" type="file">
+<label>iPhoneモデル</label>
+<select id="dev">
+<option value="iPhone-16-Pro">iPhone 16 Pro</option>
+<option value="iPhone-16">iPhone 16</option>
+<option value="iPhone-15-Pro" selected>iPhone 15 Pro</option>
+<option value="iPhone-15">iPhone 15</option>
+<option value="iPhone-14">iPhone 14</option>
+<option value="iPhone-SE-3rd-generation">iPhone SE (3rd)</option>
+</select>
+<label>iOSバージョン (ランナーに無いと失敗)</label>
+<select id="ver"><option>18.2</option><option>18.1</option><option>18.0</option><option>17.5</option><option>17.4</option><option>17.2</option></select>
+<button id="start">起動</button>
+<hr style="border-color:#333;margin:16px 0">
+<button class="g" onclick="send({type:'button',name:'HOME'})">Home</button>
+<button class="g" onclick="send({type:'button',name:'LOCK'})">Lock</button>
+<label>テキスト入力</label><input id="txt"><button class="g" id="sendtxt">送信</button>
+<button class="g" onclick="send({type:'stop'});setSt('停止しました')">停止</button>
+<div id="st"></div>
+</div>
+<div id="main"><canvas id="c" width="390" height="844"></canvas></div>
+<script>
+const $=id=>document.getElementById(id);
+for(const k of ['tok','repo','br'])$(k).value=localStorage.getItem(k)||$(k).value;
+const setSt=t=>$('st').textContent=t;
+let ws=null;const send=o=>ws&&ws.readyState===1&&ws.send(JSON.stringify(o));
+const gh=(p,o={})=>fetch('https://api.github.com/repos/'+$('repo').value+p,{...o,headers:{Authorization:'Bearer '+$('tok').value,Accept:'application/vnd.github+json','Content-Type':'application/json'}});
+const b64=f=>new Promise(r=>{const x=new FileReader();x.onload=()=>r(x.result.split(',')[1]);x.readAsDataURL(f)});
+$('start').onclick=async()=>{
+ const f=$('file').files[0];if(!f)return setSt('ファイルを選んで');
+ for(const k of ['tok','repo','br'])localStorage.setItem(k,$(k).value);
+ const id=Date.now().toString(),name='app'+(f.name.endsWith('.ipa')?'.ipa':'.zip');
+ setSt('アップロード中...');
+ let r=await gh(`/contents/uploads/${id}/${name}`,{method:'PUT',body:JSON.stringify({message:'upload',content:await b64(f),branch:$('br').value})});
+ if(!r.ok)return setSt('アップロード失敗: '+await r.text());
+ r=await gh('/actions/workflows/ios-session.yml/dispatches',{method:'POST',body:JSON.stringify({ref:$('br').value,inputs:{session:id,device_type:$('dev').value,ios_version:$('ver').value,file:name}})});
+ if(!r.ok)return setSt('起動失敗: '+await r.text());
+ setSt('ランナー起動待ち... (数分かかる)');
+ for(let i=0;i<150;i++){
+  await new Promise(r=>setTimeout(r,5000));
+  const s=await gh(`/contents/sessions/${id}.json?ref=${$('br').value}`);
+  if(s.ok){const j=JSON.parse(atob((await s.json()).content));return connect(j.url)}
+  setSt('ランナー起動待ち... '+(i*5)+'秒');
+ }
+ setSt('タイムアウト。ActionsのログをGitHubで確認して');
+};
+let sz={w:1,h:1};
+function connect(url){
+ setSt('接続中...');ws=new WebSocket(url);ws.binaryType='blob';
+ const c=$('c'),g=c.getContext('2d');
+ ws.onopen=()=>setSt('接続OK');
+ ws.onclose=()=>setSt('切断された');
+ ws.onmessage=async e=>{
+  if(typeof e.data==='string'){const m=JSON.parse(e.data);if(m.type==='info')sz=m;return}
+  const bm=await createImageBitmap(e.data);
+  if(c.width!==bm.width){c.width=bm.width;c.height=bm.height}
+  g.drawImage(bm,0,0);
+ };
+}
+const pos=e=>{const r=$('c').getBoundingClientRect();return{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}};
+let d0=null;
+$('c').onmousedown=e=>d0={...pos(e),t:Date.now()};
+$('c').onmouseup=e=>{if(!d0)return;const p=pos(e);
+ if(Math.hypot((p.x-d0.x)*sz.w,(p.y-d0.y)*sz.h)<8)send({type:'tap',x:p.x,y:p.y});
+ else send({type:'swipe',x:d0.x,y:d0.y,x2:p.x,y2:p.y,d:Math.max(0.1,(Date.now()-d0.t)/1000)});
+ d0=null};
+$('sendtxt').onclick=()=>{send({type:'text',text:$('txt').value});$('txt').value=''};
+</script></body></html>

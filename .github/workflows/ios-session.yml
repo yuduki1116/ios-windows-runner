@@ -1,0 +1,51 @@
+name: ios-session
+on:
+  workflow_dispatch:
+    inputs:
+      session:     { description: session id, required: true }
+      device_type: { description: "例: iPhone-15-Pro", required: true }
+      ios_version: { description: "例: 17.5", required: true }
+      file:        { description: "uploads/<session>/ 内のファイル名", required: true }
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Install tools
+        run: |
+          brew install cloudflared
+          brew tap facebook/fb
+          brew install idb-companion
+          pip install fb-idb
+          cd runner && npm install
+      - name: Boot simulator
+        run: |
+          VER="${{ inputs.ios_version }}"
+          RT="com.apple.CoreSimulator.SimRuntime.iOS-${VER//./-}"
+          xcrun simctl list runtimes
+          UDID=$(xcrun simctl create sim "com.apple.CoreSimulator.SimDeviceType.${{ inputs.device_type }}" "$RT")
+          echo "UDID=$UDID" >> $GITHUB_ENV
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+      - name: Install app
+        run: |
+          F="uploads/${{ inputs.session }}/${{ inputs.file }}"
+          mkdir -p /tmp/app && unzip -q "$F" -d /tmp/app
+          APP=$(find /tmp/app -maxdepth 3 -name "*.app" -type d | head -1)
+          echo "APP=$APP"
+          xcrun simctl install "$UDID" "$APP"
+          BID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist")
+          xcrun simctl launch "$UDID" "$BID"
+      - name: Stream
+        run: node runner/server.js
+        env:
+          SESSION: ${{ inputs.session }}
