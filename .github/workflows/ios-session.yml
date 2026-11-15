@@ -3,14 +3,15 @@ on:
   workflow_dispatch:
     inputs:
       session:     { description: session id, required: true }
-      device_type: { description: "例: iPhone-15-Pro", required: true }
-      ios_version: { description: "例: 17.5", required: true }
+      device_type: { description: "機種 例: iPhone 17 Pro / iPhone18,1 / iPhone-15-Pro", required: true }
+      ios_version: { description: "例: 26.0 / 18.5 / latest", required: true, default: latest }
       file:        { description: "uploads/<session>/ 内のファイル名", required: true }
+      runner:      { description: "macos-26 か macos-15", required: false, default: macos-26 }
 permissions:
   contents: write
 jobs:
   run:
-    runs-on: macos-14
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
@@ -28,11 +29,41 @@ jobs:
           pip install fb-idb
           cd runner && npm install
       - name: Boot simulator
+        env:
+          DEV: ${{ inputs.device_type }}
+          VER: ${{ inputs.ios_version }}
         run: |
-          VER="${{ inputs.ios_version }}"
-          RT="com.apple.CoreSimulator.SimRuntime.iOS-${VER//./-}"
           xcrun simctl list runtimes
-          UDID=$(xcrun simctl create sim "com.apple.CoreSimulator.SimDeviceType.${{ inputs.device_type }}" "$RT")
+          xcrun simctl list devicetypes
+          DT=$(python3 - <<'EOF'
+          import json, subprocess, os, re, sys
+          def norm(s): return re.sub(r"[^a-z0-9]", "", s.lower())
+          q = norm(os.environ["DEV"])
+          dts = json.loads(subprocess.check_output(["xcrun","simctl","list","devicetypes","-j"]))["devicetypes"]
+          hit = None
+          for d in dts:
+              ident = d["identifier"].split(".")[-1]
+              if q in (norm(d["name"]), norm(ident), norm(d.get("modelIdentifier",""))):
+                  hit = d; break
+          if not hit:
+              for d in dts:
+                  if q and q in norm(d["name"]) and "iphone" in d["identifier"].lower():
+                      hit = d; break
+          if not hit:
+              print("機種が見つからない。使えるもの:", file=sys.stderr)
+              for d in dts:
+                  print("  ", d["name"], d.get("modelIdentifier",""), file=sys.stderr)
+              sys.exit(1)
+          print(hit["identifier"])
+          EOF
+          )
+          if [ -z "$VER" ] || [ "$VER" = "latest" ]; then
+            RT=$(xcrun simctl list runtimes -j | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]; print(r[-1]['identifier'])")
+          else
+            RT="com.apple.CoreSimulator.SimRuntime.iOS-${VER//./-}"
+          fi
+          echo "DT=$DT RT=$RT"
+          UDID=$(xcrun simctl create sim "$DT" "$RT")
           echo "UDID=$UDID" >> $GITHUB_ENV
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
